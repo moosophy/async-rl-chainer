@@ -60,6 +60,13 @@ class A3C(object):
         self.past_rewards = {}
         self.past_values = {}
 
+    def compute_grads_norm(self, optimizer):
+        norm = 0
+        for param in optimizer.target.params():
+            if param.grad is not None:
+                norm += float((param.grad ** 2).sum())
+        return norm ** 0.5
+
     def sync_parameters(self):
         copy_param.copy_param(target_link=self.model,
                               source_link=self.shared_model)
@@ -134,7 +141,7 @@ class A3C(object):
                 target_link=self.shared_model, source_link=self.model)
             # Update the globally shared model
             if self.process_idx == 0:
-                norm = self.optimizer.compute_grads_norm()
+                norm = self.compute_grads_norm(self.optimizer)
                 logger.debug('grad norm:%s', norm)
             self.optimizer.update()
             if self.process_idx == 0:

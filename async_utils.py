@@ -53,15 +53,25 @@ def share_states_as_shared_arrays(link):
     return shared_arrays
 
 
+#FUNCTION BELOW IS UPDATED FOR CHAINER 7.8.1
 def extract_states_as_shared_arrays(optimizer):
+    import multiprocessing as mp
+    import chainer
+
     assert isinstance(optimizer, chainer.Optimizer)
     assert hasattr(optimizer, 'target'), 'Optimizer.setup must be called first'
+
+    model = optimizer.target  # this is the link/model
     shared_arrays = {}
-    for state_name, state in optimizer._states.items():
-        shared_arrays[state_name] = {}
-        for param_name, param in state.items():
-            shared_arrays[state_name][
-                param_name] = mp.RawArray('f', param.ravel())
+
+    for idx, param in enumerate(model.params()):
+        state = param.update_rule.state
+        if state is None:
+            continue  # skip parameters without state
+        shared_arrays[idx] = {}
+        for key, value in state.items():
+            shared_arrays[idx][key] = mp.RawArray('f', value.ravel())
+
     return shared_arrays
 
 

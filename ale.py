@@ -3,7 +3,7 @@ import os
 import sys
 
 import numpy as np
-from ale_python_interface import ALEInterface
+from ale_py import ALEInterface
 import cv2
 
 import environment

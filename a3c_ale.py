@@ -17,7 +17,7 @@ import dqn_head
 import a3c
 import ale
 import random_seed
-import async
+import async_utils
 import rmsprop_async
 from prepare_output_dir import prepare_output_dir
 from nonbias_weight_decay import NonbiasWeightDecay
@@ -230,8 +230,8 @@ def main():
 
     model, opt = model_opt()
 
-    shared_params = async.share_params_as_shared_arrays(model)
-    shared_states = async.share_states_as_shared_arrays(opt)
+    shared_params = async_utils.share_params_as_shared_arrays(model)
+    shared_states = async_utils.share_states_as_shared_arrays(opt)
 
     max_score = mp.Value('f', np.finfo(np.float32).min)
     counter = mp.Value('l', 0)
@@ -245,8 +245,8 @@ def main():
     def run_func(process_idx):
         env = ale.ALE(args.rom, use_sdl=args.use_sdl)
         model, opt = model_opt()
-        async.set_shared_params(model, shared_params)
-        async.set_shared_states(opt, shared_states)
+        async_utils.set_shared_params(model, shared_params)
+        async_utils.set_shared_states(opt, shared_states)
 
         agent = a3c.A3C(model, opt, args.t_max, 0.99, beta=args.beta,
                         process_idx=process_idx, phi=dqn_phi)
@@ -258,7 +258,7 @@ def main():
             train_loop(process_idx, counter, max_score,
                        args, agent, env, start_time)
 
-    async.run_async(args.processes, run_func)
+    async_utils.run_async(args.processes, run_func)
 
 
 if __name__ == '__main__':
