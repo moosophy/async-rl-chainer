@@ -39,7 +39,6 @@ class NIPSDQNHead(chainer.ChainList):
 
         layers = [
             L.Convolution2D(n_input_channels, 16, 8, stride=4),
-            L.Convolution2D(n_input_channels, 16, 8, stride=4),
             L.Convolution2D(16, 32, 4, stride=2),
             L.Linear(2592, n_output_channels),
         ]

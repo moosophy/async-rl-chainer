@@ -28,6 +28,19 @@ class RMSpropAsync(optimizer.GradientMethod):
                 self.alpha = alpha
                 self.eps = eps
                 self.state = None
+                self.is_elementwise = True
+
+            def update(self, param):
+                if not np.isfinite(param.data).all():
+                    print()
+                    print("NaN in param!")       
+                    print()
+                if param.grad is None:
+                    return
+                if isinstance(param.data, cuda.ndarray):
+                    self.update_one_gpu(param)
+                else:
+                    self.update_one_cpu(param)
 
             def init_state(self, param):
                 xp = cuda.get_array_module(param.data)
