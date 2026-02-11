@@ -30,3 +30,4 @@ tzdata==2025.3
 vizdoom==1.2.4
 zipp==3.23.0
 ale-py==0.11.2
+wandb==0.24.2

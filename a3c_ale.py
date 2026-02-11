@@ -24,6 +24,8 @@ from nonbias_weight_decay import NonbiasWeightDecay
 from init_like_torch import init_like_torch
 from dqn_phi import dqn_phi
 
+import wandb
+
 
 class A3CFF(chainer.ChainList, a3c.A3CModel):
 
@@ -89,13 +91,14 @@ def eval_performance(rom, p_func, n_runs):
     return mean, median, stdev
 
 
-def train_loop(process_idx, counter, max_score, args, agent, env, start_time):
+def train_loop(process_idx, counter, max_score, args, agent, env, start_time, wandb_run=None):
     try:
-
         total_r = 0
         episode_r = 0
         global_t = 0
         local_t = 0
+        episode_count = 0
+        episode_start_t = local_t
 
         while True:
 
@@ -117,9 +120,23 @@ def train_loop(process_idx, counter, max_score, args, agent, env, start_time):
             action = agent.act(env.state, env.reward, env.is_terminal)
 
             if env.is_terminal:
+                episode_count += 1
+                episode_length = local_t - episode_start_t
+                
                 if process_idx == 0:
-                    print('{} global_t:{} local_t:{} lr:{} episode_r:{}'.format(
-                        args.outdir, global_t, local_t, agent.optimizer.lr, episode_r))
+                    print('{} global_t:{} local_t:{} lr:{:.6f} episode_r:{} episode_len:{}'.format(
+                        args.outdir, global_t, local_t, agent.optimizer.lr, 
+                        episode_r, episode_length))
+                    
+                    wandb_run.log({
+                        'episode_reward': episode_r,
+                        'episode_length': episode_length,
+                        'learning_rate': agent.optimizer.lr,
+                        'global_step': global_t,
+                        'episodes': episode_count,
+                    }, step=global_t)
+                
+                episode_start_t = local_t
                 episode_r = 0
                 env.initialize()
             else:
@@ -143,6 +160,15 @@ def train_loop(process_idx, counter, max_score, args, agent, env, start_time):
                     elapsed = time.time() - start_time
                     record = (global_t, elapsed, mean, median, stdev)
                     print('\t'.join(str(x) for x in record), file=f)
+                
+                if process_idx == 0:
+                    wandb_run.log({
+                        'eval/mean_score': mean,
+                        'eval/median_score': median,
+                        'eval/stdev_score': stdev,
+                        'eval/elapsed_time': elapsed,
+                    }, step=global_t)
+                
                 with max_score.get_lock():
                     if mean > max_score.value:
                         # Save the best model so far
@@ -154,6 +180,11 @@ def train_loop(process_idx, counter, max_score, args, agent, env, start_time):
                         print('Saved the current best model to {}'.format(
                             filename))
                         max_score.value = mean
+
+                        if process_idx == 0:
+                            wandb_run.log({
+                                'best_mean_score': mean,
+                            }, step=global_t)
 
     except KeyboardInterrupt:
         if process_idx == 0:
@@ -172,7 +203,7 @@ def train_loop(process_idx, counter, max_score, args, agent, env, start_time):
 
 
 def train_loop_with_profile(process_idx, counter, max_score, args, agent, env,
-                            start_time):
+                            start_time, wandb_run=None):
     import cProfile
     cmd = 'train_loop(process_idx, counter, max_score, args, agent, env, ' \
         'start_time)'
@@ -186,7 +217,7 @@ def main():
     os.environ['OMP_NUM_THREADS'] = '1'
 
     import logging
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)  # Changed to INFO to reduce spam
 
     parser = argparse.ArgumentParser()
     parser.add_argument('processes', type=int)
@@ -203,6 +234,7 @@ def main():
     parser.add_argument('--eval-n-runs', type=int, default=10)
     parser.add_argument('--weight-decay', type=float, default=0.0)
     parser.add_argument('--use-lstm', action='store_true')
+    parser.add_argument('--wandb-name', type=str, default=None)
     parser.set_defaults(use_sdl=False)
     parser.set_defaults(use_lstm=False)
     args = parser.parse_args()
@@ -215,12 +247,43 @@ def main():
     print('Output files are saved in {}'.format(args.outdir))
 
     n_actions = ale.ALE(args.rom).number_of_actions
+    
+    wandb_run = None
+    try:
+        game_name = os.path.basename(args.rom).replace('.bin', '')
+        run_name = args.wandb_name or f"{game_name}_{'lstm' if args.use_lstm else 'ff'}_{args.processes}p"
+        
+        wandb_run = wandb.init(
+            entity="Carla-RL-runs",
+            project="A3C-breakout",
+            name=run_name,
+            config={
+                'game': game_name,
+                'processes': args.processes,
+                'lr': args.lr,
+                'beta': args.beta,
+                't_max': args.t_max,
+                'gamma': 0.99,
+                'use_lstm': args.use_lstm,
+                'steps': args.steps,
+                'eval_frequency': args.eval_frequency,
+                'weight_decay': args.weight_decay,
+                'n_actions': n_actions,
+                'optimizer': 'RMSpropAsync',
+                'eps': 1e-1,
+                'alpha': 0.99,
+            }
+        )
+        print(f'WandB initialized: {wandb_run.url}')
+    except Exception as e:
+        print(f"WandB init failed: {e}")
 
     def model_opt():
         if args.use_lstm:
             model = A3CLSTM(n_actions)
         else:
             model = A3CFF(n_actions)
+        #The line below should be noted as eps=1e-1 is way too high, usually it would be eps=1e-8
         opt = rmsprop_async.RMSpropAsync(lr=7e-4, eps=1e-1, alpha=0.99)
         opt.setup(model)
         opt.add_hook(chainer.optimizer.GradientClipping(40))
@@ -251,14 +314,21 @@ def main():
         agent = a3c.A3C(model, opt, args.t_max, 0.99, beta=args.beta,
                         process_idx=process_idx, phi=dqn_phi)
 
+        # Only process 0 logs to WandB
+        worker_wandb = wandb_run if (process_idx == 0) else None
+
         if args.profile:
             train_loop_with_profile(process_idx, counter, max_score,
-                                    args, agent, env, start_time)
+                                    args, agent, env, start_time, worker_wandb)
         else:
             train_loop(process_idx, counter, max_score,
-                       args, agent, env, start_time)
+                       args, agent, env, start_time, worker_wandb)
 
     async_utils.run_async(args.processes, run_func)
+    
+    # Finish WandB run
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == '__main__':

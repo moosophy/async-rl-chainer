@@ -51,7 +51,8 @@ class RMSpropAsync(optimizer.GradientMethod):
                 grad = param.grad
                 ms *= self.alpha
                 ms += (1 - self.alpha) * grad * grad
-                param.data -= self.lr * grad / np.sqrt(ms + self.eps)
+                #line below matches the original, but should be looked at, as usually epsilon should be outside of the squared root
+                param.data -= self.lr * grad / np.sqrt(ms + self.eps)           
 
             def update_one_gpu(self, param):
                 ms = self.state['ms']

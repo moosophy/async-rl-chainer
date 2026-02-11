@@ -23,23 +23,46 @@ def set_shared_params(a, b):
 
 
 def set_shared_states(optimizer, shared_arrays):
-    import numpy as np
-
-    for idx, shared_state in shared_arrays.items():
+    """
+    Set optimizer states from shared arrays.
+    For Chainer 7.8.1, optimizer states are stored in param.update_rule.state
+    """
+    assert isinstance(optimizer, chainer.Optimizer)
+    assert hasattr(optimizer, 'target'), 'Optimizer.setup must be called first'
+    
+    model = optimizer.target
+    
+    # Map parameter names to params for quick lookup
+    param_dict = {name: param for name, param in model.namedparams()}
+    
+    for param_name, shared_state in shared_arrays.items():
+        if param_name not in param_dict:
+            continue
+            
+        param = param_dict[param_name]
+        
+        # In Chainer 7.8.1, state is in param.update_rule.state
+        if not hasattr(param, 'update_rule') or param.update_rule.state is None:
+            continue
+            
         for key, raw_array in shared_state.items():
-            old_param = optimizer._states[idx][key]
-            optimizer._states[idx][key] = np.frombuffer(
-                raw_array,
-                dtype=old_param.dtype
-            ).reshape(old_param.shape)
-
+            if key in param.update_rule.state:
+                old_value = param.update_rule.state[key]
+                param.update_rule.state[key] = np.frombuffer(
+                    raw_array,
+                    dtype=old_value.dtype
+                ).reshape(old_value.shape)
 
 
 def extract_params_as_shared_arrays(link):
+    """
+    Extract model parameters as shared arrays.
+    Uses parameter names (strings) as keys for compatibility.
+    """
     assert isinstance(link, chainer.Link)
     shared_arrays = {}
     for param_name, param in link.namedparams():
-        shared_arrays[id(param)] = mp.RawArray('f', param.data.ravel())
+        shared_arrays[param_name] = mp.RawArray('f', param.data.ravel())
     return shared_arrays
 
 
@@ -49,34 +72,49 @@ def share_params_as_shared_arrays(link):
     return shared_arrays
 
 
-def share_states_as_shared_arrays(link):
-    shared_arrays = extract_states_as_shared_arrays(link)
-    set_shared_states(link, shared_arrays)
+def share_states_as_shared_arrays(optimizer):
+    shared_arrays = extract_states_as_shared_arrays(optimizer)
+    set_shared_states(optimizer, shared_arrays)
     return shared_arrays
 
 
-#FUNCTION BELOW IS UPDATED FOR CHAINER 7.8.1
 def extract_states_as_shared_arrays(optimizer):
-    import multiprocessing as mp
-
+    """
+    Extract optimizer states as shared arrays.
+    For Chainer 7.8.1, states are in param.update_rule.state
+    """
+    assert isinstance(optimizer, chainer.Optimizer)
+    assert hasattr(optimizer, 'target'), 'Optimizer.setup must be called first'
+    
     model = optimizer.target
     shared_arrays = {}
-
-    for idx, param in enumerate(model.params()):
+    
+    for param_name, param in model.namedparams():
+        # In Chainer 7.8.1, check if param has update_rule and state
+        if not hasattr(param, 'update_rule'):
+            continue
+            
+        if param.update_rule.state is None:
+            # Initialize state if not already done
+            if hasattr(param.update_rule, 'init_state'):
+                param.update_rule.init_state(param)
+            else:
+                continue
+        
         state = param.update_rule.state
         if state is None:
             continue
-
-        shared_arrays[idx] = {}
-
+            
+        shared_arrays[param_name] = {}
+        
         for key, value in state.items():
-            shared_arrays[idx][key] = mp.RawArray(
-                'f',
-                value.ravel()
-            )
-
+            if isinstance(value, np.ndarray):
+                shared_arrays[param_name][key] = mp.RawArray(
+                    'f',
+                    value.ravel()
+                )
+    
     return shared_arrays
-
 
 
 def run_async(n_process, run_func):
